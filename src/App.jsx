@@ -12,14 +12,14 @@ import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot } f
 
 // --- Firebase Configuration (PLACEHOLDER) ---
 // TODO: Replace with your actual Firebase config
-const firebaseConfig = {
-  apiKey: "AIzaSyC81mOF23hP6j4F_rTUtKhDQFcQIdGlrSU",
-  authDomain: "traffic-6f24a.firebaseapp.com",
-  projectId: "traffic-6f24a",
-  storageBucket: "traffic-6f24a.firebasestorage.app",
-  messagingSenderId: "907265529400",
-  appId: "1:907265529400:web:692081d574aa61ab79f8cd"
-};
+// const firebaseConfig = {
+//   apiKey: "AIzaSyC81mOF23hP6j4F_rTUtKhDQFcQIdGlrSU",
+//   authDomain: "traffic-6f24a.firebaseapp.com",
+//   projectId: "traffic-6f24a",
+//   storageBucket: "traffic-6f24a.firebasestorage.app",
+//   messagingSenderId: "907265529400",
+//   appId: "1:907265529400:web:692081d574aa61ab79f8cd"
+// };
 
 // apiKey: "AIzaSyC81mOF23hP6j4F_rTUtKhDQFcQIdGlrSU",
 // authDomain: "traffic-6f24a.firebaseapp.com",
