@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Activity, AlertTriangle, Camera, Car, CreditCard, Eye, FileText,
-  LayoutDashboard, Search, Settings, Siren, Video, Zap
+  LayoutDashboard, Moon, Search, Settings, Siren, Sun, Video, Zap
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -13,14 +13,21 @@ import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot } f
 // --- Firebase Configuration (PLACEHOLDER) ---
 // TODO: Replace with your actual Firebase config
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyC81mOF23hP6j4F_rTUtKhDQFcQIdGlrSU",
+  authDomain: "traffic-6f24a.firebaseapp.com",
+  projectId: "traffic-6f24a",
+  storageBucket: "traffic-6f24a.firebasestorage.app",
+  messagingSenderId: "907265529400",
+  appId: "1:907265529400:web:692081d574aa61ab79f8cd"
 };
 
+// apiKey: "AIzaSyC81mOF23hP6j4F_rTUtKhDQFcQIdGlrSU",
+// authDomain: "traffic-6f24a.firebaseapp.com",
+// projectId: "traffic-6f24a",
+// storageBucket: "traffic-6f24a.firebasestorage.app",
+// messagingSenderId: "907265529400",
+// appId: "1:907265529400:web:692081d574aa61ab79f8cd",
+// measurementId: "G-47EHBSNPLK"
 // Initialize Firebase (wrapped in try-catch to prevent crash on empty config)
 let db;
 try {
@@ -38,8 +45,111 @@ const MODES = {
 };
 
 const VIOLATION_TYPES = {
-  RED_LIGHT: { label: 'Red Light Crossing', fine: 1000, points: 50 },
-  SPEEDING: { label: 'Over Speeding', fine: 2000, points: 100 },
+  RED_LIGHT: { label: 'Red Light Crossing', baseFine: 500, points: 50 },
+  SPEEDING: { label: 'Over Speeding', baseFine: 500, points: 100 },
+};
+
+// Fine Calculation Rules
+const FINE_RULES = {
+  BASE_FINE: 500,
+  REPEAT_OFFENDER_MULTIPLIERS: {
+    0: 1,    // No previous violations
+    1: 2,    // 1-2 violations
+    3: 4,    // 3-4 violations
+    5: 6,    // 5-7 violations
+    8: 10    // 8+ violations
+  },
+  SPEED_PENALTIES: {
+    NORMAL: 0,      // ≤60 km/h
+    MODERATE: 500,  // >60 km/h
+    HIGH: 1000      // >80 km/h
+  },
+  VEHICLE_TYPE_SURCHARGE: {
+    CAR: 0,
+    BIKE: 0,
+    TRUCK: 400,
+    BUS: 400
+  },
+  PEAK_HOUR_SURCHARGE: 300,
+  SPECIAL_ZONE_SURCHARGE: {
+    SCHOOL: 800,
+    HOSPITAL: 800,
+    NORMAL: 0
+  },
+  RISK_SCORE_ADJUSTMENT: {
+    VERY_HIGH: 1200,  // 0-200
+    HIGH: 800,        // 201-400
+    MEDIUM: 500,      // 401-600
+    LOW: 200,         // 601-800
+    VERY_LOW: 0       // 801-900
+  }
+};
+
+// Dynamic Fine Calculation Function
+const calculateDynamicFine = (violationData) => {
+  const {
+    speed = 40,
+    vehicleType = 'car',
+    timestamp = new Date(),
+    zone = 'normal',
+    repeatOffenses = 0,
+    riskScore = 750
+  } = violationData;
+
+  let breakdown = {
+    baseFine: FINE_RULES.BASE_FINE,
+    repeatMultiplier: 1,
+    speedPenalty: 0,
+    vehicleSurcharge: 0,
+    peakHourSurcharge: 0,
+    zoneSurcharge: 0,
+    riskAdjustment: 0
+  };
+
+  // 1. Repeat Offender Multiplier
+  if (repeatOffenses >= 8) breakdown.repeatMultiplier = 10;
+  else if (repeatOffenses >= 5) breakdown.repeatMultiplier = 6;
+  else if (repeatOffenses >= 3) breakdown.repeatMultiplier = 4;
+  else if (repeatOffenses >= 1) breakdown.repeatMultiplier = 2;
+  else breakdown.repeatMultiplier = 1;
+
+  // 2. Speed-Based Penalty
+  if (speed > 80) breakdown.speedPenalty = FINE_RULES.SPEED_PENALTIES.HIGH;
+  else if (speed > 60) breakdown.speedPenalty = FINE_RULES.SPEED_PENALTIES.MODERATE;
+
+  // 3. Vehicle Type Surcharge
+  const vType = vehicleType.toUpperCase();
+  breakdown.vehicleSurcharge = FINE_RULES.VEHICLE_TYPE_SURCHARGE[vType] || 0;
+
+  // 4. Peak Hour Surcharge (8-11 AM or 5-9 PM)
+  const hour = timestamp.getHours();
+  if ((hour >= 8 && hour < 11) || (hour >= 17 && hour < 21)) {
+    breakdown.peakHourSurcharge = FINE_RULES.PEAK_HOUR_SURCHARGE;
+  }
+
+  // 5. Special Zone Surcharge
+  const zoneType = zone.toUpperCase();
+  breakdown.zoneSurcharge = FINE_RULES.SPECIAL_ZONE_SURCHARGE[zoneType] || 0;
+
+  // 6. Risk Score Adjustment
+  if (riskScore <= 200) breakdown.riskAdjustment = FINE_RULES.RISK_SCORE_ADJUSTMENT.VERY_HIGH;
+  else if (riskScore <= 400) breakdown.riskAdjustment = FINE_RULES.RISK_SCORE_ADJUSTMENT.HIGH;
+  else if (riskScore <= 600) breakdown.riskAdjustment = FINE_RULES.RISK_SCORE_ADJUSTMENT.MEDIUM;
+  else if (riskScore <= 800) breakdown.riskAdjustment = FINE_RULES.RISK_SCORE_ADJUSTMENT.LOW;
+  else breakdown.riskAdjustment = FINE_RULES.RISK_SCORE_ADJUSTMENT.VERY_LOW;
+
+  // Calculate Total
+  const totalFine = (breakdown.baseFine * breakdown.repeatMultiplier) +
+    breakdown.speedPenalty +
+    breakdown.vehicleSurcharge +
+    breakdown.peakHourSurcharge +
+    breakdown.zoneSurcharge +
+    breakdown.riskAdjustment;
+
+  return {
+    total: totalFine,
+    breakdown
+  };
 };
 
 const INITIAL_SCORE = 900;
@@ -59,7 +169,7 @@ const downloadCSV = (data) => {
     v.vehicleId,
     v.type.label,
     v.speed,
-    v.type.fine,
+    v.fine || v.type.baseFine || 500,
     v.timestamp.toLocaleDateString(),
     v.timestamp.toLocaleTimeString(),
     v.source || 'Unknown',
@@ -80,8 +190,53 @@ const downloadCSV = (data) => {
 
 // --- Components ---
 
+// 0. Error Boundary
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-8 text-red-500 bg-gray-900 min-h-screen flex flex-col items-center justify-center">
+          <div className="max-w-2xl w-full bg-gray-800 p-8 rounded-xl shadow-2xl border border-red-900">
+            <h1 className="text-3xl font-bold mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-8 h-8" /> Application Error
+            </h1>
+            <p className="text-gray-300 mb-4">Something went wrong while rendering the application.</p>
+            <pre className="bg-black/50 p-4 rounded text-sm font-mono overflow-auto max-h-60 text-red-400">
+              {this.state.error && this.state.error.toString()}
+            </pre>
+            <button
+              onClick={() => {
+                localStorage.clear();
+                window.location.reload();
+              }}
+              className="mt-6 bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-bold transition-colors"
+            >
+              Clear Data & Reload
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 // 1. Live Monitor Component
-const LiveMonitor = ({ addViolation }) => {
+const LiveMonitor = ({ addViolation, darkMode }) => {
   const [mode, setMode] = useState(MODES.SIMULATION);
   const [trafficLight, setTrafficLight] = useState('RED'); // RED, GREEN, YELLOW
   const [videoSrc, setVideoSrc] = useState(null);
@@ -91,6 +246,12 @@ const LiveMonitor = ({ addViolation }) => {
   const [resizing, setResizing] = useState(null); // 'detection' | 'signal' | null
   const mouseOffset = useRef({ x: 0, y: 0 });
   const [detectionActive, setDetectionActive] = useState(false);
+  const [videoStats, setVideoStats] = useState({
+    framesProcessed: 0,
+    detections: 0,
+    signalStatus: 'Unknown',
+    lastDetection: null
+  });
 
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
@@ -105,65 +266,81 @@ const LiveMonitor = ({ addViolation }) => {
   const signalZone = useRef({ x: 500, y: 50, w: 50, h: 50 });
 
   // --- Simulation Logic ---
-  // --- Simulation Logic ---
-  const spawnCar = (width) => {
-    if (Math.random() > 0.015) return; // Slightly lower spawn rate
 
-    // Check for overlap with last car
-    const lastCar = cars.current[cars.current.length - 1];
-    if (lastCar && lastCar.x < 100) return; // Don't spawn if last car is too close
+  const spawnCar = (width) => {
+    if (Math.random() > 0.03) return; // Spawn rate
+
+    const lanes = [320, 370, 420]; // 3 Lanes Y-coordinates
+    const lane = lanes[Math.floor(Math.random() * lanes.length)];
+
+    // Check overlap in specific lane
+    const lastCarInLane = cars.current.findLast(c => Math.abs(c.y - lane) < 10);
+    if (lastCarInLane && lastCarInLane.x < 150) return;
+
+    const types = [
+      { type: 'car', width: 100, height: 40, color: '#3B82F6', speedMod: 1 },
+      { type: 'bike', width: 60, height: 25, color: '#F59E0B', speedMod: 1.2 },
+      { type: 'truck', width: 160, height: 50, color: '#4B5563', speedMod: 0.7 },
+    ];
+    const vehicleType = types[Math.floor(Math.random() * types.length)];
 
     cars.current.push({
       id: Date.now() + Math.random(),
-      x: -120,
-      y: 360,
-      width: 100,
-      height: 50,
-      speed: 3 + Math.random() * 2,
-      color: ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#6366F1'][Math.floor(Math.random() * 5)],
-      plate: `KA-${Math.floor(Math.random() * 90) + 10}-${['A', 'B', 'C'][Math.floor(Math.random() * 3)]}${['A', 'B', 'C'][Math.floor(Math.random() * 3)]}-${Math.floor(Math.random() * 9000) + 1000}`,
+      x: -180,
+      y: lane,
+      ...vehicleType,
+      speed: (3 + Math.random() * 2) * vehicleType.speedMod,
+      plate: `GJ-${Math.floor(Math.random() * 90) + 10}-${['A', 'B', 'C', 'D', 'E'][Math.floor(Math.random() * 5)]}${['A', 'B', 'C', 'D', 'E'][Math.floor(Math.random() * 5)]}-${Math.floor(Math.random() * 9000) + 1000}`,
       hasViolated: false,
-      willViolate: Math.random() < 0.4 // 40% chance to run red light (increased from 30%)
+      willViolate: Math.random() < 0.4
     });
   };
 
   const updateSimulation = (ctx, width, height) => {
-    // Draw Road
+    // Draw Road (Full Width, 3 Lanes)
     ctx.fillStyle = '#1F2937';
-    ctx.fillRect(0, 300, width, 150);
+    ctx.fillRect(0, 280, width, 180);
 
     // Draw Lane Markings
     ctx.strokeStyle = '#4B5563';
-    ctx.setLineDash([20, 20]);
+    ctx.setLineDash([30, 30]);
+    ctx.lineWidth = 2;
+
+    // Lane 1 Divider
     ctx.beginPath();
-    ctx.moveTo(0, 375);
-    ctx.lineTo(width, 375);
+    ctx.moveTo(0, 340);
+    ctx.lineTo(width, 340);
     ctx.stroke();
+
+    // Lane 2 Divider
+    ctx.beginPath();
+    ctx.moveTo(0, 400);
+    ctx.lineTo(width, 400);
+    ctx.stroke();
+
     ctx.setLineDash([]);
 
     // Draw Stop Line
     ctx.strokeStyle = 'white';
-    ctx.lineWidth = 8;
+    ctx.lineWidth = 12;
     ctx.beginPath();
-    ctx.moveTo(width / 2, 300);
-    ctx.lineTo(width / 2, 450);
+    ctx.moveTo(width / 2, 280);
+    ctx.lineTo(width / 2, 460);
     ctx.stroke();
 
     // Spawn & Move Cars
     spawnCar(width);
 
     cars.current.forEach((car, index) => {
-      // Collision Avoidance / Spacing Logic
+      // Collision Avoidance / Spacing Logic (Per Lane)
       let speedMultiplier = 1;
-      const carAhead = cars.current[index - 1]; // Cars are ordered by spawn time (index 0 is oldest/furthest)
+      // Find the closest car ahead IN THE SAME LANE
+      const carAhead = cars.current.find(c => c.id !== car.id && Math.abs(c.y - car.y) < 10 && c.x > car.x && (c.x - car.x) < 200);
 
-      // If there is a car ahead and it's close, slow down
-      // EXCEPTION: If this car is a violator and close to the stop line, it ignores the car ahead (ghost mode for simulation effect)
-      if (carAhead && (carAhead.x - car.x) < 150) {
-        if (!car.willViolate || (car.x < width / 2 - 100)) {
-          speedMultiplier = 0.5;
-          if ((carAhead.x - car.x) < 110) speedMultiplier = 0; // Stop if too close
-        }
+      if (carAhead) {
+        const dist = carAhead.x - car.x;
+        if (dist < 150) speedMultiplier = 0.5;
+        if (dist < 110) speedMultiplier = 0;
       }
 
       // Traffic Light Logic
@@ -177,33 +354,54 @@ const LiveMonitor = ({ addViolation }) => {
 
       car.x += car.speed * speedMultiplier;
 
-      // Draw Car Body
+      // Draw Vehicle
       ctx.fillStyle = car.color;
-      // Rounded rect for car body
-      ctx.beginPath();
-      ctx.roundRect(car.x, car.y, car.width, car.height, 10);
-      ctx.fill();
 
-      // Car Roof/Window
-      ctx.fillStyle = '#111827';
-      ctx.beginPath();
-      ctx.roundRect(car.x + 20, car.y + 5, 60, 40, 5);
-      ctx.fill();
+      if (car.type === 'bike') {
+        // Bike Shape
+        ctx.beginPath();
+        ctx.roundRect(car.x, car.y + 5, car.width, car.height - 10, 5);
+        ctx.fill();
+        // Rider
+        ctx.fillStyle = '#111827';
+        ctx.beginPath();
+        ctx.arc(car.x + 30, car.y + 12, 8, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (car.type === 'truck') {
+        // Truck Shape
+        ctx.fillRect(car.x, car.y, car.width, car.height);
+        ctx.fillStyle = '#374151'; // Cargo
+        ctx.fillRect(car.x, car.y + 5, car.width - 40, car.height - 10);
+        ctx.fillStyle = '#111827'; // Cab Window
+        ctx.fillRect(car.x + car.width - 35, car.y + 5, 30, 40);
+      } else {
+        // Car Shape
+        ctx.beginPath();
+        ctx.roundRect(car.x, car.y, car.width, car.height, 10);
+        ctx.fill();
+        // Roof
+        ctx.fillStyle = '#111827';
+        ctx.beginPath();
+        ctx.roundRect(car.x + 20, car.y + 5, 60, car.height - 10, 5);
+        ctx.fill();
+      }
 
-      // Headlights
+      // Headlights (All)
       ctx.fillStyle = '#FEF3C7';
       ctx.beginPath();
-      ctx.arc(car.x + car.width - 5, car.y + 10, 5, 0, Math.PI * 2);
-      ctx.arc(car.x + car.width - 5, car.y + car.height - 10, 5, 0, Math.PI * 2);
+      ctx.arc(car.x + car.width - 2, car.y + 10, 4, 0, Math.PI * 2);
+      ctx.arc(car.x + car.width - 2, car.y + car.height - 10, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // License Plate
-      ctx.fillStyle = 'white';
-      ctx.fillRect(car.x + 10, car.y + 15, 25, 20);
-      ctx.fillStyle = 'black';
-      ctx.font = '8px monospace';
-      ctx.fillText(car.plate.substring(0, 5), car.x + 12, car.y + 25);
-      ctx.fillText(car.plate.substring(6), car.x + 12, car.y + 33);
+      // License Plate (All)
+      if (car.type !== 'bike') {
+        ctx.fillStyle = 'white';
+        ctx.fillRect(car.x + 5, car.y + car.height / 2 - 8, 25, 16);
+        ctx.fillStyle = 'black';
+        ctx.font = '7px monospace';
+        ctx.fillText(car.plate.substring(0, 5), car.x + 7, car.y + car.height / 2 - 1);
+        ctx.fillText(car.plate.substring(6), car.x + 7, car.y + car.height / 2 + 6);
+      }
 
       // Violation Check
       if (trafficLight === 'RED' && car.x > width / 2 && !car.hasViolated) {
@@ -219,13 +417,31 @@ const LiveMonitor = ({ addViolation }) => {
   const triggerViolation = (car) => {
     if (!isArmed) return;
     const evidence = canvasRef.current.toDataURL('image/jpeg', 0.5);
+
+    // Generate random violation factors
+    const violationData = {
+      speed: Math.round(car.speed * 10),
+      vehicleType: car.type,
+      timestamp: new Date(),
+      zone: Math.random() > 0.8 ? (Math.random() > 0.5 ? 'school' : 'hospital') : 'normal',
+      repeatOffenses: Math.floor(Math.random() * 10), // 0-9 previous violations
+      riskScore: Math.floor(Math.random() * 900) // 0-900
+    };
+
+    const fineCalculation = calculateDynamicFine(violationData);
+
     addViolation({
       type: VIOLATION_TYPES.RED_LIGHT,
-      vehicleId: car.plate || `KA-01-AB-${Math.floor(Math.random() * 9000) + 1000}`,
-      timestamp: new Date(),
+      vehicleId: car.plate || `GJ-01-AB-${Math.floor(Math.random() * 9000) + 1000}`,
+      timestamp: violationData.timestamp,
       evidence: evidence,
-      speed: Math.round(car.speed * 10),
-      source: mode
+      speed: violationData.speed,
+      source: mode,
+      zone: violationData.zone,
+      repeatOffenses: violationData.repeatOffenses,
+      riskScore: violationData.riskScore,
+      fine: fineCalculation.total,
+      fineBreakdown: fineCalculation.breakdown
     });
   };
 
@@ -255,11 +471,23 @@ const LiveMonitor = ({ addViolation }) => {
     drawZone(detectionZone.current, 'cyan', 'Detection Zone');
     drawZone(signalZone.current, 'orange', 'Signal Zone');
 
-    // Mock Detection Feedback
+    // Mock Detection Feedback & Stats Update
     if (Math.random() > 0.95) {
       setDetectionActive(true);
+      setVideoStats(prev => ({
+        ...prev,
+        detections: prev.detections + 1,
+        lastDetection: new Date().toLocaleTimeString()
+      }));
       setTimeout(() => setDetectionActive(false), 200);
     }
+
+    // Update frame count and signal status
+    setVideoStats(prev => ({
+      ...prev,
+      framesProcessed: prev.framesProcessed + 1,
+      signalStatus: Math.random() > 0.5 ? 'Red' : 'Green'
+    }));
 
     if (detectionActive) {
       ctx.strokeStyle = 'red';
@@ -448,6 +676,14 @@ const LiveMonitor = ({ addViolation }) => {
               onChange={handleFileChange}
             />
             <span className="text-xs text-gray-400">{videoSrc ? 'Video Loaded' : 'No video selected'}</span>
+
+            {/* Mock SRCGAN / Enhancement UI */}
+            <button className="bg-purple-600 hover:bg-purple-500 px-3 py-1 rounded text-xs flex items-center gap-1 ml-4" title="Simulate Super-Resolution">
+              <Zap size={12} /> Enhance (SRCGAN)
+            </button>
+            <button className="bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-xs flex items-center gap-1" title="Simulate ANPR">
+              <Search size={12} /> Detect Plates
+            </button>
           </div>
         )}
 
@@ -491,8 +727,43 @@ const LiveMonitor = ({ addViolation }) => {
         )}
 
         {/* Overlays */}
-        {/* Overlays */}
-        {/* System Status moved to header of component for better visibility */}
+        {/* Video Analysis Info Panel */}
+        {(mode === MODES.VIDEO || mode === MODES.CCTV) && (
+          <div className="absolute top-4 right-4 bg-black/80 backdrop-blur-sm p-4 rounded-lg border border-cyan-500/50 min-w-[250px]">
+            <h3 className="text-cyan-400 font-bold text-sm mb-3 flex items-center gap-2">
+              <Activity size={16} className="animate-pulse" />
+              Video Analysis
+            </h3>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Frames Processed:</span>
+                <span className="text-white font-mono">{videoStats.framesProcessed}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Motion Detections:</span>
+                <span className="text-green-400 font-mono">{videoStats.detections}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Signal Status:</span>
+                <span className={`font-bold ${videoStats.signalStatus === 'Red' ? 'text-red-500' : 'text-green-500'}`}>
+                  {videoStats.signalStatus}
+                </span>
+              </div>
+              {videoStats.lastDetection && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Last Detection:</span>
+                  <span className="text-yellow-400 font-mono text-[10px]">{videoStats.lastDetection}</span>
+                </div>
+              )}
+              <div className="mt-3 pt-2 border-t border-gray-700">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                  <span className="text-green-400 text-[10px]">AI Processing Active</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {mode === MODES.SIMULATION && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-4 bg-black/70 p-3 rounded-full">
@@ -516,7 +787,7 @@ const LiveMonitor = ({ addViolation }) => {
 };
 
 // 2. Dashboard & History
-const Dashboard = ({ violations }) => {
+const Dashboard = ({ violations, darkMode }) => {
   const [filter, setFilter] = useState('ALL');
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -532,10 +803,11 @@ const Dashboard = ({ violations }) => {
   const analyticsData = useMemo(() => {
     const hours = {};
     violations.forEach(v => {
+      if (!v.timestamp || typeof v.timestamp.getHours !== 'function') return;
       const hour = v.timestamp.getHours() + ":00";
       if (!hours[hour]) hours[hour] = { time: hour, violations: 0, revenue: 0 };
       hours[hour].violations += 1;
-      hours[hour].revenue += v.type.fine;
+      hours[hour].revenue += (v.fine || v.type.baseFine || 500);
     });
     return Object.values(hours).sort((a, b) => parseInt(a.time) - parseInt(b.time));
   }, [violations]);
@@ -553,22 +825,22 @@ const Dashboard = ({ violations }) => {
     <div className="space-y-6">
       {/* Header with Clock & Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex flex-col justify-center items-center">
+        <div className={`p-4 rounded-xl border flex flex-col justify-center items-center transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
           <div className="text-gray-400 text-sm">Current Time</div>
-          <div className="text-2xl font-mono font-bold text-blue-400">
+          <div className="text-2xl font-mono font-bold text-blue-500">
             {currentTime.toLocaleTimeString()}
           </div>
           <div className="text-xs text-gray-500">{currentTime.toLocaleDateString()}</div>
         </div>
-        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+        <div className={`p-4 rounded-xl border transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
           <div className="text-gray-400 text-sm">Simulation Violations</div>
-          <div className="text-2xl font-bold text-purple-400">{stats.simulation}</div>
+          <div className="text-2xl font-bold text-purple-500">{stats.simulation}</div>
         </div>
-        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+        <div className={`p-4 rounded-xl border transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
           <div className="text-gray-400 text-sm">Video Upload Violations</div>
-          <div className="text-2xl font-bold text-orange-400">{stats.video}</div>
+          <div className="text-2xl font-bold text-orange-500">{stats.video}</div>
         </div>
-        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+        <div className={`p-4 rounded-xl border transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
           <div className="text-gray-400 text-sm">CCTV/Stream Violations</div>
           <div className="text-2xl font-bold text-green-400">{stats.cctv}</div>
         </div>
@@ -581,25 +853,25 @@ const Dashboard = ({ violations }) => {
             <h3 className="text-xl font-bold">Analytics Overview</h3>
             <button
               onClick={() => downloadCSV(violations)}
-              className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded flex items-center gap-2"
+              className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded flex items-center gap-2 text-white shadow-lg shadow-green-500/20"
             >
               <FileText size={16} /> Export Full History (CSV)
             </button>
           </div>
 
-          <div className="bg-gray-800 p-6 rounded-xl border border-gray-700">
+          <div className={`p-6 rounded-xl border transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <Activity className="text-purple-400" /> Hourly Violations
             </h3>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={analyticsData.length > 0 ? analyticsData : ANALYTICS_DATA}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis dataKey="time" stroke="#9CA3AF" />
-                  <YAxis stroke="#9CA3AF" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#374151" : "#E5E7EB"} />
+                  <XAxis dataKey="time" stroke={darkMode ? "#9CA3AF" : "#6B7280"} />
+                  <YAxis stroke={darkMode ? "#9CA3AF" : "#6B7280"} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151' }}
-                    itemStyle={{ color: '#E5E7EB' }}
+                    contentStyle={{ backgroundColor: darkMode ? '#1F2937' : '#FFFFFF', borderColor: darkMode ? '#374151' : '#E5E7EB', color: darkMode ? '#E5E7EB' : '#111827' }}
+                    itemStyle={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                   />
                   <Line type="monotone" dataKey="violations" stroke="#8B5CF6" strokeWidth={3} />
                 </LineChart>
@@ -607,19 +879,19 @@ const Dashboard = ({ violations }) => {
             </div>
           </div>
 
-          <div className="bg-gray-800 p-6 rounded-xl border border-gray-700">
+          <div className={`p-6 rounded-xl border transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <CreditCard className="text-green-400" /> Revenue Potential
             </h3>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={analyticsData.length > 0 ? analyticsData : ANALYTICS_DATA}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis dataKey="time" stroke="#9CA3AF" />
-                  <YAxis stroke="#9CA3AF" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#374151" : "#E5E7EB"} />
+                  <XAxis dataKey="time" stroke={darkMode ? "#9CA3AF" : "#6B7280"} />
+                  <YAxis stroke={darkMode ? "#9CA3AF" : "#6B7280"} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151' }}
-                    itemStyle={{ color: '#E5E7EB' }}
+                    contentStyle={{ backgroundColor: darkMode ? '#1F2937' : '#FFFFFF', borderColor: darkMode ? '#374151' : '#E5E7EB', color: darkMode ? '#E5E7EB' : '#111827' }}
+                    itemStyle={{ color: darkMode ? '#E5E7EB' : '#111827' }}
                   />
                   <Bar dataKey="revenue" fill="#10B981" radius={[4, 4, 0, 0]} />
                 </BarChart>
@@ -629,8 +901,8 @@ const Dashboard = ({ violations }) => {
         </div>
 
         {/* Recent Violations Feed */}
-        <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 h-[calc(100vh-12rem)] overflow-y-auto">
-          <div className="sticky top-0 bg-gray-800 pb-4 z-10">
+        <div className={`p-6 rounded-xl border transition-colors h-[calc(100vh-12rem)] overflow-y-auto ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
+          <div className={`sticky top-0 pb-4 z-10 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <Siren className="text-red-400" /> Recent Violations
             </h3>
@@ -639,7 +911,7 @@ const Dashboard = ({ violations }) => {
                 <button
                   key={m}
                   onClick={() => setFilter(m)}
-                  className={`text-xs px-2 py-1 rounded border ${filter === m ? 'bg-blue-600 border-blue-500' : 'border-gray-600 hover:bg-gray-700'}`}
+                  className={`text-xs px-2 py-1 rounded border transition-colors ${filter === m ? 'bg-blue-600 border-blue-500 text-white' : darkMode ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
                 >
                   {m.toUpperCase()}
                 </button>
@@ -652,25 +924,25 @@ const Dashboard = ({ violations }) => {
               <p className="text-gray-500 text-center py-10">No violations detected yet.</p>
             ) : (
               filteredViolations.slice(0, 8).map((v, i) => (
-                <div key={i} className="bg-gray-700/50 p-4 rounded-lg border border-gray-600 hover:border-red-500 transition-colors">
+                <div key={i} className={`p-4 rounded-lg border transition-colors ${darkMode ? 'bg-gray-700/50 border-gray-600 hover:border-red-500' : 'bg-gray-50 border-gray-200 hover:border-red-500'}`}>
                   <div className="flex justify-between items-start mb-2">
-                    <span className="font-mono font-bold text-yellow-400">{v.vehicleId}</span>
+                    <span className={`font-mono font-bold ${darkMode ? 'text-yellow-400' : 'text-blue-600'}`}>{v.vehicleId}</span>
                     <div className="text-right">
                       <div className="text-xs text-gray-400">{v.timestamp.toLocaleTimeString()}</div>
                       <div className="text-[10px] text-gray-500">{v.timestamp.toLocaleDateString()}</div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-300 mb-2">
-                    <span className="px-2 py-0.5 bg-red-500/20 text-red-300 rounded text-xs border border-red-500/30">
+                  <div className={`flex items-center gap-2 text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                    <span className="px-2 py-0.5 bg-red-500/20 text-red-500 rounded text-xs border border-red-500/30">
                       {v.type.label}
                     </span>
-                    <span className="text-xs bg-gray-600 px-1 rounded">{v.source}</span>
+                    <span className={`text-xs px-1 rounded ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}>{v.source}</span>
                   </div>
                   <div className="flex justify-between items-center mt-3">
-                    <span className="font-bold text-green-400">₹{v.type.fine}</span>
+                    <span className="font-bold text-green-500 text-lg">₹{v.fine || v.type.baseFine || 500}</span>
                     <button
                       onClick={() => setSelectedEvidence(v.evidence)}
-                      className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded flex items-center gap-1"
+                      className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded flex items-center gap-1"
                     >
                       <FileText size={12} /> View Proof
                     </button>
@@ -704,7 +976,7 @@ const Dashboard = ({ violations }) => {
 };
 
 // 3. Driver Portal
-const DriverPortal = () => {
+const DriverPortal = ({ darkMode }) => {
   const [search, setSearch] = useState('');
   const [result, setResult] = useState(null);
 
@@ -784,15 +1056,219 @@ const DriverPortal = () => {
   );
 };
 
+// 4. Settings Component - Fine Calculation Rules
+const SettingsComponent = ({ darkMode }) => {
+  return (
+    <div className="max-w-6xl mx-auto">
+      <div className={`p-8 rounded-2xl shadow-2xl border transition-colors ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+        <div className="flex items-center gap-3 mb-6">
+          <Settings className="text-blue-500" size={32} />
+          <div>
+            <h2 className="text-3xl font-bold">Fine Calculation Rules</h2>
+            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Dynamic penalty system for red-light violations</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Base Fine */}
+          <div className={`p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+              Base Fine
+            </h3>
+            <div className="text-4xl font-bold text-blue-500 mb-2">₹500</div>
+            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Starting point for all red-light violations</p>
+          </div>
+
+          {/* Repeat Offender Multipliers */}
+          <div className={`p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              Repeat Offender Multipliers
+            </h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>0 violations:</span><span className="font-bold">1× (₹500)</span></div>
+              <div className="flex justify-between"><span>1-2 violations:</span><span className="font-bold text-orange-500">2× (₹1,000)</span></div>
+              <div className="flex justify-between"><span>3-4 violations:</span><span className="font-bold text-orange-600">4× (₹2,000)</span></div>
+              <div className="flex justify-between"><span>5-7 violations:</span><span className="font-bold text-red-500">6× (₹3,000)</span></div>
+              <div className="flex justify-between"><span>8+ violations:</span><span className="font-bold text-red-600">10× (₹5,000)</span></div>
+            </div>
+          </div>
+
+          {/* Speed-Based Penalties */}
+          <div className={`p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+              Speed-Based Penalties
+            </h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>≤ 60 km/h:</span><span className="font-bold text-green-500">₹0</span></div>
+              <div className="flex justify-between"><span>&gt; 60 km/h:</span><span className="font-bold text-yellow-500">+₹500</span></div>
+              <div className="flex justify-between"><span>&gt; 80 km/h:</span><span className="font-bold text-red-500">+₹1,000</span></div>
+            </div>
+          </div>
+
+          {/* Vehicle Type Surcharge */}
+          <div className={`p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-purple-500"></div>
+              Vehicle Type Surcharge
+            </h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>Car/Bike:</span><span className="font-bold text-green-500">₹0</span></div>
+              <div className="flex justify-between"><span>Truck/Bus:</span><span className="font-bold text-purple-500">+₹400</span></div>
+            </div>
+          </div>
+
+          {/* Peak Hour Surcharge */}
+          <div className={`p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-orange-500"></div>
+              Peak Hour Surcharge
+            </h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>8:00 AM - 11:00 AM:</span><span className="font-bold text-orange-500">+₹300</span></div>
+              <div className="flex justify-between"><span>5:00 PM - 9:00 PM:</span><span className="font-bold text-orange-500">+₹300</span></div>
+              <div className="flex justify-between"><span>Other times:</span><span className="font-bold text-green-500">₹0</span></div>
+            </div>
+          </div>
+
+          {/* Special Zone Surcharge */}
+          <div className={`p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-pink-500"></div>
+              Special Zone Surcharge
+            </h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>School Zone:</span><span className="font-bold text-pink-500">+₹800</span></div>
+              <div className="flex justify-between"><span>Hospital Zone:</span><span className="font-bold text-pink-500">+₹800</span></div>
+              <div className="flex justify-between"><span>Regular Zone:</span><span className="font-bold text-green-500">₹0</span></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Risk Score Adjustment */}
+        <div className={`mt-6 p-6 rounded-xl border ${darkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+          <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-cyan-500"></div>
+            Risk Score Adjustment
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 text-sm">
+            <div className="text-center p-3 rounded-lg bg-red-500/20 border border-red-500">
+              <div className="font-bold text-red-500">Very High Risk</div>
+              <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>Score: 0-200</div>
+              <div className="text-lg font-bold text-red-500 mt-2">+₹1,200</div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-orange-500/20 border border-orange-500">
+              <div className="font-bold text-orange-500">High Risk</div>
+              <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>Score: 201-400</div>
+              <div className="text-lg font-bold text-orange-500 mt-2">+₹800</div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-yellow-500/20 border border-yellow-500">
+              <div className="font-bold text-yellow-500">Medium Risk</div>
+              <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>Score: 401-600</div>
+              <div className="text-lg font-bold text-yellow-500 mt-2">+₹500</div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-blue-500/20 border border-blue-500">
+              <div className="font-bold text-blue-500">Low Risk</div>
+              <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>Score: 601-800</div>
+              <div className="text-lg font-bold text-blue-500 mt-2">+₹200</div>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-green-500/20 border border-green-500">
+              <div className="font-bold text-green-500">Very Low Risk</div>
+              <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>Score: 801-900</div>
+              <div className="text-lg font-bold text-green-500 mt-2">₹0</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Formula */}
+        <div className={`mt-6 p-6 rounded-xl border-2 border-blue-500 ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
+          <h3 className="text-lg font-bold mb-3 text-blue-500">Final Fine Calculation Formula</h3>
+          <div className={`font-mono text-sm p-4 rounded-lg ${darkMode ? 'bg-gray-900' : 'bg-white'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+            <div className="text-center">
+              <span className="text-blue-500">Total Fine</span> =
+              (<span className="text-blue-500">Base Fine</span> × <span className="text-red-500">Repeat Multiplier</span>) +
+              <span className="text-yellow-500">Speed Penalty</span> +
+              <span className="text-purple-500">Vehicle Surcharge</span> +
+              <span className="text-orange-500">Peak Hour</span> +
+              <span className="text-pink-500">Special Zone</span> +
+              <span className="text-cyan-500">Risk Adjustment</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Main App Component ---
+const NavButton = ({ icon, label, active, onClick, darkMode }) => (
+  <button
+    onClick={onClick}
+    className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all duration-200 group relative ${active
+      ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
+      : darkMode
+        ? 'text-gray-400 hover:bg-gray-700 hover:text-white'
+        : 'text-gray-500 hover:bg-gray-100 hover:text-blue-600'
+      }`}
+  >
+    {icon}
+    <span className="text-[10px] font-medium">{label}</span>
+    {active && (
+      <div className="absolute -right-1 top-1/2 -translate-y-1/2 w-1 h-8 bg-white rounded-l-full opacity-20"></div>
+    )}
+  </button>
+);
+
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [violations, setViolations] = useState([]);
+  const [darkMode, setDarkMode] = useState(true);
+
+  const toggleTheme = () => setDarkMode(!darkMode);
+
+  // Apply theme class to body
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [darkMode]);
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  // Initialize with dummy violations for demonstration
+  useEffect(() => {
+    const createDummyViolation = (vehicleId, minutesAgo, speed, source, zone, repeatOffenses, riskScore) => {
+      const timestamp = new Date(Date.now() - 1000 * 60 * minutesAgo);
+      const violationData = { speed, vehicleType: 'car', timestamp, zone, repeatOffenses, riskScore };
+      const fineCalculation = calculateDynamicFine(violationData);
+      return {
+        type: VIOLATION_TYPES.RED_LIGHT,
+        vehicleId,
+        timestamp,
+        evidence: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjQ1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjQ1MCIgZmlsbD0iIzFGMjkzNyIvPjx0ZXh0IHg9IjQwMCIgeT0iMjI1IiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMjQiIGZpbGw9IiNmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlZpb2xhdGlvbiBFdmlkZW5jZTwvdGV4dD48L3N2Zz4=',
+        speed, source, zone, repeatOffenses, riskScore,
+        fine: fineCalculation.total,
+        fineBreakdown: fineCalculation.breakdown
+      };
+    };
+    const dummyViolations = [
+      createDummyViolation('GJ-01-AB-5678', 15, 85, 'video', 'school', 2, 350),
+      createDummyViolation('GJ-12-CD-3421', 30, 65, 'video', 'normal', 0, 750),
+      createDummyViolation('GJ-05-EF-7890', 45, 55, 'cctv', 'hospital', 5, 250),
+      createDummyViolation('GJ-22-GH-1234', 60, 72, 'video', 'normal', 1, 820),
+      createDummyViolation('GJ-18-IJ-5567', 90, 48, 'cctv', 'normal', 8, 150)
+    ];
+
+    // Only set dummy data if no violations exist yet
+    setViolations(prev => prev.length === 0 ? dummyViolations : prev);
   }, []);
 
   // Load violations from Firestore (or local mock)
@@ -844,70 +1320,61 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 font-sans">
-      {/* Sidebar / Navigation */}
-      <nav className="fixed left-0 top-0 h-full w-20 bg-gray-800 border-r border-gray-700 flex flex-col items-center py-6 gap-8 z-50">
-        <div className="p-3 bg-blue-600 rounded-xl shadow-lg shadow-blue-500/20">
-          <Zap size={24} className="text-white" />
-        </div>
-
-        <div className="flex flex-col gap-4 w-full px-2">
-          <NavButton icon={<LayoutDashboard />} label="Dash" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
-          <NavButton icon={<Camera />} label="Live" active={activeTab === 'live'} onClick={() => setActiveTab('live')} />
-          <NavButton icon={<Search />} label="Portal" active={activeTab === 'portal'} onClick={() => setActiveTab('portal')} />
-          <NavButton icon={<Settings />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
-        </div>
-      </nav>
-
-      {/* Main Content */}
-      <main className="ml-20 p-8">
-        <header className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
-              TrafficGuardian
-            </h1>
-            <p className="text-gray-400">AI-Powered Violation Detection System</p>
+    <ErrorBoundary>
+      <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? 'bg-gray-900 text-gray-100' : 'bg-gray-100 text-gray-900'}`}>
+        {/* Sidebar / Navigation */}
+        <nav className={`fixed left-0 top-0 h-full w-20 border-r flex flex-col items-center py-6 gap-8 z-50 transition-colors duration-300 ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-lg'}`}>
+          <div className="p-3 bg-blue-600 rounded-xl shadow-lg shadow-blue-500/20">
+            <Zap size={24} className="text-white" />
           </div>
-          <div className="flex items-center gap-6">
-            <div className="text-right hidden md:block">
-              <div className="text-2xl font-mono font-bold text-gray-200">
-                {currentTime.toLocaleTimeString()}
-              </div>
-              <div className="text-sm text-gray-400">
-                {currentTime.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+
+          <div className="flex flex-col gap-4 w-full px-2">
+            <NavButton icon={<LayoutDashboard />} label="Dash" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} darkMode={darkMode} />
+            <NavButton icon={<Camera />} label="Live" active={activeTab === 'live'} onClick={() => setActiveTab('live')} darkMode={darkMode} />
+            <NavButton icon={<Search />} label="Portal" active={activeTab === 'portal'} onClick={() => setActiveTab('portal')} darkMode={darkMode} />
+            <NavButton icon={<Settings />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} darkMode={darkMode} />
+          </div>
+
+          <div className="mt-auto pb-6">
+            <button
+              onClick={toggleTheme}
+              className={`p-3 rounded-xl transition-colors ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' : 'bg-gray-100 hover:bg-gray-200 text-orange-500'}`}
+            >
+              {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+          </div>
+        </nav>
+
+        {/* Main Content */}
+        <main className="ml-20 p-4 md:p-8 transition-all duration-300">
+          <header className="flex justify-between items-center mb-8">
+            <div>
+              <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent">
+                TrafficGuardian
+              </h1>
+              <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                Intelligent Violation Detection System
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className={`flex items-center gap-2 px-4 py-2 rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
+                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                <span className="text-sm font-medium">System Online</span>
               </div>
             </div>
-            <div className="bg-gray-800 px-4 py-2 rounded-full border border-gray-700 flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-              <span className="text-sm font-mono text-gray-300">SYSTEM ONLINE</span>
-            </div>
-          </div>
-        </header>
+          </header>
 
-        {activeTab === 'dashboard' && <Dashboard violations={violations} />}
-        {activeTab === 'live' && <LiveMonitor addViolation={handleAddViolation} />}
-        {activeTab === 'portal' && <DriverPortal />}
-        {activeTab === 'settings' && (
-          <div className="text-center text-gray-500 py-20">
-            <Settings size={48} className="mx-auto mb-4 opacity-50" />
-            <h2 className="text-xl">System Configuration</h2>
-            <p>Configure Detection Zones, Camera Inputs, and Fine Rules here.</p>
-          </div>
-        )}
-      </main>
-    </div>
+          {activeTab === 'dashboard' && <Dashboard violations={violations} darkMode={darkMode} />}
+          {activeTab === 'live' && <LiveMonitor addViolation={handleAddViolation} darkMode={darkMode} />}
+          {activeTab === 'portal' && <DriverPortal darkMode={darkMode} />}
+          {activeTab === 'settings' && <SettingsComponent darkMode={darkMode} />}
+        </main>
+      </div>
+    </ErrorBoundary>
   );
 }
 
-const NavButton = ({ icon, label, active, onClick }) => (
-  <button
-    onClick={onClick}
-    className={`flex flex-col items-center gap-1 p-3 rounded-xl transition-all ${active ? 'bg-blue-600/20 text-blue-400' : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-      }`}
-  >
-    {icon}
-    <span className="text-[10px] font-medium">{label}</span>
-  </button>
-);
 
 export default App;
+
+
